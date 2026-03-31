@@ -3,113 +3,119 @@ import time
 import platform
 import pyttsx3
 import ctypes
+import os
 import tkinter as tk
-from tkinter import ttk
 from PIL import Image, ImageTk
 
-class PresenceApp:
+class PulmoLock:
     def __init__(self, window):
         self.window = window
-        self.window.title("AI Presence Lock")
-        self.window.geometry("700x600")
-        self.window.configure(bg="#2c3e50")
+        self.window.title("PulmoLock - Full Screen Monitor")
+        
+        # --- FULLSCREEN SETTINGS ---
+        self.window.attributes("-fullscreen", True)
+        self.window.configure(bg="black")
+        
+        # Get your monitor's exact resolution
+        self.screen_w = self.window.winfo_screenwidth()
+        self.screen_h = self.window.winfo_screenheight()
+
+        # ESC key to exit
+        self.window.bind("<Escape>", lambda e: self.close_app())
 
         # --- Variables ---
-        self.running = False
-        self.wait_time = 10
+        self.is_monitoring = False
+        self.wait_time = 12  
         self.last_seen_time = time.time()
         self.cap = None
         self.engine = pyttsx3.init()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-        # --- UI Layout ---
         self.setup_ui()
 
     def setup_ui(self):
-        # Title
-        title = tk.Label(self.window, text="Presence Monitor", font=("Arial", 20, "bold"), fg="white", bg="#2c3e50")
-        title.pack(pady=10)
-
-        # Video Feed Label
+        # 1. Video Background (Fills 100% of the screen)
         self.video_label = tk.Label(self.window, bg="black")
-        self.video_label.pack(pady=10, padx=20)
+        self.video_label.place(x=0, y=0, width=self.screen_w, height=self.screen_h)
 
-        # Status & Countdown
-        self.status_label = tk.Label(self.window, text="Status: Idle", font=("Arial", 14), fg="#ecf0f1", bg="#2c3e50")
-        self.status_label.pack(pady=5)
+        # 2. UI Overlay (Floating on top of the video)
+        self.overlay_frame = tk.Frame(self.window, bg="", bd=0)
+        self.overlay_frame.place(relx=0.5, rely=0.9, anchor="center")
 
-        # Control Button
-        self.btn_toggle = ttk.Button(self.window, text="Start Monitoring", command=self.toggle_monitoring)
-        self.btn_toggle.pack(pady=20)
+        self.status_var = tk.StringVar(value="SYSTEM READY")
+        self.status_label = tk.Label(
+            self.window, textvariable=self.status_var,
+            font=("Helvetica", 24, "bold"), fg="#00ffcc", bg="black"
+        )
+        self.status_label.place(relx=0.5, rely=0.1, anchor="center")
 
-    def speak(self, text):
-        self.engine.say(text)
-        self.engine.runAndWait()
+        self.btn_toggle = tk.Button(
+            self.overlay_frame, text="START PULMOLOCK", 
+            font=("Arial", 14, "bold"), bg="#00ffcc", fg="black",
+            command=self.toggle_system, padx=20, pady=10
+        )
+        self.btn_toggle.pack()
 
-    def suspend_pc(self):
-        self.speak("No face detected. Suspending system.")
-        if platform.system() == "Windows":
-            ctypes.windll.PowrProf.SetSuspendState(0, 1, 0)
-        else:
-            import os
-            os.system("systemctl suspend")
-
-    def toggle_monitoring(self):
-        if not self.running:
-            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
-                self.status_label.config(text="Error: Camera not found", fg="#e74c3c")
-                return
-            self.running = True
-            self.last_seen_time = time.time()
-            self.btn_toggle.config(text="Stop Monitoring")
-            self.update_frame()
-        else:
-            self.stop_monitoring()
-
-    def stop_monitoring(self):
-        self.running = False
+    def close_app(self):
+        self.is_monitoring = False
         if self.cap:
             self.cap.release()
-        self.video_label.config(image="")
-        self.btn_toggle.config(text="Start Monitoring")
-        self.status_label.config(text="Status: Idle", fg="#ecf0f1")
+        self.window.destroy()
 
-    def update_frame(self):
-        if not self.running:
-            return
+    def toggle_system(self):
+        if not self.is_monitoring:
+            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            self.is_monitoring = True
+            self.last_seen_time = time.time()
+            self.btn_toggle.config(text="STOP (ESC)", bg="#ff4b2b", fg="white")
+            self.update_loop()
+        else:
+            self.close_app()
+
+    def update_loop(self):
+        if not self.is_monitoring: return
 
         ret, frame = self.cap.read()
         if ret:
-            # Face Detection Logic
+            # AI Logic
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
 
             if len(faces) > 0:
                 self.last_seen_time = time.time()
-                self.status_label.config(text="Status: User Present", fg="#2ecc71")
+                self.status_var.set("USER PRESENT")
+                self.status_label.config(fg="#00ffcc")
             else:
                 elapsed = time.time() - self.last_seen_time
-                seconds_left = max(0, int(self.wait_time - elapsed))
-                self.status_label.config(text=f"Status: Away - Sleeping in {seconds_left}s", fg="#e67e22")
+                count = max(0, int(self.wait_time - elapsed))
+                self.status_var.set(f"ABSENCE DETECTED: {count}s")
+                self.status_label.config(fg="#ff4b2b")
 
                 if elapsed > self.wait_time:
-                    self.stop_monitoring()
-                    self.suspend_pc()
+                    self.execute_sleep()
                     return
 
-            # Convert OpenCV frame (BGR) to Tkinter compatible image (RGB)
+            # Full Screen UI Processing
+            frame = cv2.flip(frame, 1) # Mirror mode
+            frame = cv2.resize(frame, (self.screen_w, self.screen_h)) # Stretch to screen
+            
             img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(img)
-            imgtk = ImageTk.PhotoImage(image=img)
+            imgtk = ImageTk.PhotoImage(image=Image.fromarray(img))
             self.video_label.imgtk = imgtk
             self.video_label.configure(image=imgtk)
 
-        # Repeat every 10ms
-        self.window.after(10, self.update_frame)
+        self.window.after(10, self.update_loop)
 
-# Run the App
+    def execute_sleep(self):
+        self.engine.say("Suspending system.")
+        self.engine.runAndWait()
+        self.close_app()
+        if platform.system() == "Windows":
+            ctypes.windll.PowrProf.SetSuspendState(0, 1, 0)
+        else:
+            os.system("systemctl suspend")
+
 if __name__ == "__main__":
     root = tk.Tk()
-    app = PresenceApp(root)
+    app = PulmoLock(root)
     root.mainloop()
